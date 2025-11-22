@@ -1,4 +1,5 @@
 import puppeteer from 'puppeteer'
+import { parseFollowerCount } from '@/app/utils/parser'
 
 const browser = await puppeteer.launch({
   headless: true,
@@ -17,14 +18,23 @@ export async function POST(request: Request) {
 
     const selector = `a[href="/${username}/verified_followers"] span span`;
     await page.waitForSelector(selector);
-    const followers = await page.$eval(
+    const raw = await page.$eval(
       selector,
       el => el.textContent?.trim() || ""
     );
 
-    return new Response(JSON.stringify({ followers: followers }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    const followers = parseFollowerCount(raw);
+
+    const photoSelector = `a[href="/${username}/photo"] img`;
+
+    await page.waitForSelector(photoSelector, { timeout: 5000 });
+    const profileImage = await page.$eval(photoSelector, el => el.getAttribute("src"));
+
+    if (followers > 100000) {
+      return Response.json({ error: "too many followers, cant render" });
+    }
+
+    return Response.json({ followers, profileImage });
   } catch (error) {
     console.error("Error in POST /api/getFollowers:", error);
     return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
