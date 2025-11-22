@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# chromium binary archive (generated during build)
+public/chromium-pack.tar
