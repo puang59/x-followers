@@ -62,7 +62,14 @@ export async function POST(request: Request) {
       const executablePath = await getChromiumPath();
       launchOptions = {
         ...launchOptions,
-        args: [...chromium.args, "--no-sandbox", "--disable-setuid-sandbox"],
+        args: [
+          ...chromium.args,
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-gpu",
+          "--single-process", // Important for Vercel's serverless environment
+        ],
         executablePath,
       };
       console.log("Launching browser with executable path:", executablePath);
@@ -71,15 +78,42 @@ export async function POST(request: Request) {
       puppeteer = await import("puppeteer");
     }
 
+    console.log("Launching browser...");
     browser = await puppeteer.launch(launchOptions);
+    console.log("Browser launched, creating page...");
     const page = await browser.newPage();
 
-    await page.goto("https://x.com/" + username, {
-      waitUntil: "networkidle2",
+    // Set a reasonable timeout for the entire operation (60 seconds)
+    page.setDefaultTimeout(60000);
+    page.setDefaultNavigationTimeout(60000);
+
+    // Block unnecessary resources to speed up page load
+    await page.setRequestInterception(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    page.on("request", (req: any) => {
+      const resourceType = req.resourceType();
+      // Block heavy resources but allow images (needed for profile pic) and essential resources
+      if (
+        ["document", "script", "stylesheet", "xhr", "fetch", "image"].includes(
+          resourceType
+        )
+      ) {
+        req.continue();
+      } else {
+        req.abort();
+      }
     });
 
+    // Use 'domcontentloaded' instead of 'networkidle2' - much faster
+    console.log("Navigating to page...");
+    await page.goto("https://x.com/" + username, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000, // 30 second timeout for page load
+    });
+    console.log("Page loaded, waiting for selector...");
+
     const selector = `a[href="/${username}/verified_followers"] span span`;
-    await page.waitForSelector(selector);
+    await page.waitForSelector(selector, { timeout: 20000 }); // 20 second timeout
     const raw = await page.$eval(
       selector,
       (el: Element) => el.textContent?.trim() || ""
@@ -89,7 +123,7 @@ export async function POST(request: Request) {
 
     const photoSelector = `a[href="/${username}/photo"] img`;
 
-    await page.waitForSelector(photoSelector, { timeout: 5000 });
+    await page.waitForSelector(photoSelector, { timeout: 10000 }); // 10 second timeout
     const profileImage = await page.$eval(photoSelector, (el: Element) =>
       el.getAttribute("src")
     );
@@ -101,6 +135,22 @@ export async function POST(request: Request) {
     return Response.json({ followers, profileImage });
   } catch (error) {
     console.error("Error in POST /api/getFollowers:", error);
+    const errorMessage =
+      error instanceof Error ? error.message : "Internal Server Error";
+    // Check if it's a timeout error
+    if (
+      errorMessage.includes("timeout") ||
+      errorMessage.includes("Timeout") ||
+      errorMessage.includes("Navigation timeout")
+    ) {
+      return new Response(
+        JSON.stringify({ error: "Request timed out. Please try again." }),
+        {
+          status: 504,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
     return new Response(JSON.stringify({ error: "Internal Server Error" }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
